@@ -71,6 +71,18 @@ your target contains `ibazel_notify_changes` in its `tags` attribute, then the
 command will stay alive and will receive a notification of the source changes on
 stdin.
 
+Targets that additionally contain `ibazel_notify_changes_v1` receive a
+versioned JSON event after each incremental build containing the filesystem
+changes that triggered it. Keep both tags so older iBazel versions still use
+notification mode. Targets without the new tag retain the legacy protocol.
+
+```text
+IBAZEL_BUILD_COMPLETED SUCCESS
+IBAZEL_EVENT {"version":1,"type":"build_completed","success":true,"changes":[{"path":"/workspace/src/app.ts","kind":"source"}]}
+```
+
+`kind` is `source` for source-file changes and `graph` for build-file changes.
+
 ## Output Runner
 
 iBazel is capable of producing and running commands from the output of Bazel
