@@ -32,7 +32,7 @@ jobs:
 
           - name: darwin_amd64
             artifact: ibazel_darwin_amd64
-            os: macos-13
+            os: macos-15-intel
             build_flags: --platforms=@io_bazel_rules_go//go/toolchain:darwin_amd64_cgo
             ext: ""
 
@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
 
@@ -55,14 +55,14 @@ jobs:
         run: cp $(bazel info bazel-bin)/cmd/ibazel/ibazel_/ibazel${{ matrix.ext }} ${{ matrix.artifact }}
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.artifact }}
 
       - name: Upload Release Asset
         id: upload-release-asset 
-        uses: actions/upload-release-asset@v1
+        uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5 # v1
         if: ${{ github.event.release.upload_url }} 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,11 +79,11 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           path: ./npm-staging/bin
 
@@ -104,7 +104,7 @@ jobs:
           bazel run --config="release" "//release/npm" -- "${PWD}/CONTRIBUTORS" > "npm-staging/package.json"
 
       # Setup .npmrc file to publish to npm
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
