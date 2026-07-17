@@ -84,6 +84,7 @@ type mockCommand struct {
 	args        []string
 
 	notifiedOfChanges bool
+	changes           []command.Change
 	started           bool
 	terminated        bool
 
@@ -99,8 +100,9 @@ func (m *mockCommand) Start() (*bytes.Buffer, error) {
 	m.started = true
 	return nil, nil
 }
-func (m *mockCommand) NotifyOfChanges() *bytes.Buffer {
+func (m *mockCommand) NotifyOfChanges(changes []command.Change) *bytes.Buffer {
 	m.notifiedOfChanges = true
+	m.changes = changes
 	return nil
 }
 func (m *mockCommand) Terminate() {
@@ -438,6 +440,7 @@ func TestIBazelRun_notifyPreexistiingJobWhenStarting(t *testing.T) {
 		notifiedOfChanges: false,
 	}
 	i.cmd = cmd
+	i.pendingChanges = []command.Change{{Path: "/workspace/path/to/file", Kind: "source"}}
 
 	path := "//path/to:target"
 	i.run(path)
@@ -445,6 +448,66 @@ func TestIBazelRun_notifyPreexistiingJobWhenStarting(t *testing.T) {
 	if !cmd.notifiedOfChanges {
 		t.Errorf("The previously running command was not notified of changes")
 	}
+	assertEqual(t, i.pendingChanges, cmd.changes, "Changes passed to running command")
+}
+
+func TestSetupRunNegotiatesStructuredNotifications(t *testing.T) {
+	oldCommandNotifyCommand := commandNotifyCommand
+	defer func() { commandNotifyCommand = oldCommandNotifyCommand }()
+
+	for _, test := range []struct {
+		name       string
+		tags       []string
+		structured bool
+	}{
+		{name: "legacy", tags: []string{"ibazel_notify_changes"}},
+		{name: "structured", tags: []string{"ibazel_notify_changes", "ibazel_notify_changes_v1"}, structured: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			i, mockBazel := newIBazel(t)
+			defer i.Cleanup()
+
+			target := "//path/to:target"
+			attributeType := blaze_query.Attribute_STRING_LIST
+			mockBazel.AddCQueryResponse(target, &analysispb.CqueryResult{
+				Results: []*analysispb.ConfiguredTarget{{
+					Target: &blaze_query.Target{
+						Type: blaze_query.Target_RULE.Enum(),
+						Rule: &blaze_query.Rule{
+							Name: proto.String(target),
+							Attribute: []*blaze_query.Attribute{{
+								Name:            proto.String("tags"),
+								Type:            &attributeType,
+								StringListValue: test.tags,
+							}},
+						},
+					},
+				}},
+			})
+
+			var structured bool
+			commandNotifyCommand = func(_ []string, _ []string, _ string, _ []string, enabled bool) command.Command {
+				structured = enabled
+				return &mockCommand{}
+			}
+
+			i.setupRun(target)
+			assertEqual(t, test.structured, structured, "Structured notification mode")
+		})
+	}
+}
+
+func TestChangeDetectedRecordsUniqueChanges(t *testing.T) {
+	i := &IBazel{}
+	i.changeDetected(nil, "source", "/workspace/path/to/file")
+	i.changeDetected(nil, "source", "/workspace/path/to/file")
+	i.changeDetected(nil, "graph", "/workspace/path/to/BUILD")
+
+	want := []command.Change{
+		{Path: "/workspace/path/to/file", Kind: "source"},
+		{Path: "/workspace/path/to/BUILD", Kind: "graph"},
+	}
+	assertEqual(t, want, i.pendingChanges, "Unique changes for the current iteration")
 }
 
 func TestHandleSignals_SIGINTWithoutRunningCommand(t *testing.T) {

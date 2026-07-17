@@ -15,6 +15,7 @@
 package command
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -23,6 +24,39 @@ import (
 	"github.com/bazelbuild/bazel-watcher/internal/ibazel/log"
 	"github.com/bazelbuild/bazel-watcher/internal/ibazel/process_group"
 )
+
+type bufferWriteCloser struct {
+	bytes.Buffer
+}
+
+func (b *bufferWriteCloser) Close() error { return nil }
+
+func TestNotifyCommandStructuredBuildEvent(t *testing.T) {
+	stdin := &bufferWriteCloser{}
+	c := &notifyCommand{stdin: stdin, structured: true}
+	changes := []Change{
+		{Path: "/workspace/frontend/app.tsx", Kind: "source"},
+		{Path: "/workspace/frontend/BUILD", Kind: "graph"},
+	}
+
+	c.writeBuildEvent(true, changes)
+
+	want := "IBAZEL_EVENT {\"version\":1,\"type\":\"build_completed\",\"success\":true,\"changes\":[{\"path\":\"/workspace/frontend/app.tsx\",\"kind\":\"source\"},{\"path\":\"/workspace/frontend/BUILD\",\"kind\":\"graph\"}]}\n"
+	if got := stdin.String(); got != want {
+		t.Errorf("structured build event = %q, want %q", got, want)
+	}
+}
+
+func TestNotifyCommandLegacyProtocolDoesNotWriteBuildEvent(t *testing.T) {
+	stdin := &bufferWriteCloser{}
+	c := &notifyCommand{stdin: stdin}
+
+	c.writeBuildEvent(true, []Change{{Path: "/workspace/app.ts", Kind: "source"}})
+
+	if got := stdin.String(); got != "" {
+		t.Errorf("legacy protocol wrote structured event %q", got)
+	}
+}
 
 func TestNotifyCommand(t *testing.T) {
 	log.SetLogger(t)
@@ -52,11 +86,11 @@ func TestNotifyCommand(t *testing.T) {
 	bazelNew = func() bazel.Bazel { return b }
 	defer func() { bazelNew = oldBazelNew }()
 
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 	b.BuildError(errors.New("Demo error"))
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 	b.BuildError(nil)
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 
 	b.AssertActions(t, [][]string{
 		{"SetStartupArgs"},
@@ -120,14 +154,14 @@ func TestNotifyCommand_Restart(t *testing.T) {
 		t.Errorf("new subprocess shouldn't have been started yet. State: %v", pg.RootProcess().ProcessState)
 	}
 
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 	if c.IsSubprocessRunning() {
 		t.Errorf("process should not start with build errors. State: %v", pg.RootProcess().ProcessState)
 	}
 
 	// Since the process isn't currently running, this should start it.
 	b.BuildError(nil)
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 	if !c.IsSubprocessRunning() {
 		t.Errorf("subprocess should have started. State: %v", pg.RootProcess().ProcessState)
 	}
@@ -140,14 +174,14 @@ func TestNotifyCommand_Restart(t *testing.T) {
 	}
 
 	b.BuildError(errors.New("Demo error"))
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 	if c.IsSubprocessRunning() {
 		t.Errorf("subprocess should not restart with build errors. State: %v", pg.RootProcess().ProcessState)
 	}
 
 	// Since the process isn't currently running, this should re-start it.
 	b.BuildError(nil)
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 	if !c.IsSubprocessRunning() {
 		t.Errorf("subprocess should have been restarted. State: %v", pg.RootProcess().ProcessState)
 	}
@@ -157,7 +191,7 @@ func TestNotifyCommand_Restart(t *testing.T) {
 		t.Error("PIDs of restarted process should be different that original process")
 	}
 
-	c.NotifyOfChanges()
+	c.NotifyOfChanges(nil)
 	if pid2 != c.pg.RootProcess().Process.Pid {
 		t.Error("non-dead process was restarted")
 	}

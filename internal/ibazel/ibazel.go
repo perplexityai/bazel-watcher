@@ -83,6 +83,7 @@ type IBazel struct {
 	filesWatched map[common.Watcher]map[string]struct{} // Inner map is a surrogate for a set
 
 	lifecycleListeners []Lifecycle
+	pendingChanges     []command.Change
 
 	state State
 }
@@ -213,6 +214,17 @@ func (i *IBazel) targetDecider(target string, rule *blaze_query.Rule) {
 }
 
 func (i *IBazel) changeDetected(targets []string, changeType string, change string) {
+	pendingChange := command.Change{Path: change, Kind: changeType}
+	seen := false
+	for _, existing := range i.pendingChanges {
+		if existing == pendingChange {
+			seen = true
+			break
+		}
+	}
+	if !seen {
+		i.pendingChanges = append(i.pendingChanges, pendingChange)
+	}
 	for _, l := range i.lifecycleListeners {
 		l.ChangeDetected(targets, changeType, change)
 	}
@@ -344,6 +356,7 @@ func (i *IBazel) iteration(command string, commandToRun runnableCommand, targets
 		outputBuffer, err := commandToRun(targets...)
 		i.interruptCount = 0
 		i.afterCommand(targets, command, err == nil, outputBuffer)
+		i.pendingChanges = nil
 		i.state = WAIT
 	}
 }
@@ -427,17 +440,21 @@ func (i *IBazel) setupRun(target string) command.Command {
 	i.targetDecider(target, rule)
 
 	commandNotify := false
+	structuredNotify := false
 	for _, attr := range rule.Attribute {
 		if *attr.Name == "tags" && *attr.Type == blaze_query.Attribute_STRING_LIST {
 			if contains(attr.StringListValue, "ibazel_notify_changes") {
 				commandNotify = true
+			}
+			if contains(attr.StringListValue, "ibazel_notify_changes_v1") {
+				structuredNotify = true
 			}
 		}
 	}
 
 	if commandNotify {
 		log.Logf("Launching with notifications")
-		return commandNotifyCommand(i.startupArgs, i.bazelArgs, target, i.args)
+		return commandNotifyCommand(i.startupArgs, i.bazelArgs, target, i.args, structuredNotify)
 	} else {
 		return commandDefaultCommand(i.startupArgs, i.bazelArgs, target, i.args)
 	}
@@ -456,7 +473,7 @@ func (i *IBazel) run(targets ...string) (*bytes.Buffer, error) {
 	}
 
 	log.Logf("Notifying of changes")
-	outputBuffer := i.cmd.NotifyOfChanges()
+	outputBuffer := i.cmd.NotifyOfChanges(i.pendingChanges)
 	return outputBuffer, nil
 }
 
