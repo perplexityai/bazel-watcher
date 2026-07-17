@@ -46,8 +46,14 @@ type Command interface {
 	Start() (*bytes.Buffer, error)
 	Terminate()
 	Kill()
-	NotifyOfChanges() *bytes.Buffer
+	NotifyOfChanges(changes []Change) *bytes.Buffer
 	IsSubprocessRunning() bool
+}
+
+// Change describes a filesystem change that triggered the current build.
+type Change struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 // start will be called by most implementations since this logic is extremely

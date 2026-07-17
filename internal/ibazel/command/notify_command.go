@@ -16,6 +16,7 @@ package command
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"sync"
@@ -31,17 +32,26 @@ type notifyCommand struct {
 	args        []string
 	pg          process_group.ProcessGroup
 	stdin       io.WriteCloser
+	structured  bool
 	termSync    sync.Once
+}
+
+type buildEvent struct {
+	Version int      `json:"version"`
+	Type    string   `json:"type"`
+	Success bool     `json:"success"`
+	Changes []Change `json:"changes"`
 }
 
 // NotifyCommand is an alternate mode for starting a command. In this mode the
 // command will be notified on stdin that the source files have changed.
-func NotifyCommand(startupArgs []string, bazelArgs []string, target string, args []string) Command {
+func NotifyCommand(startupArgs []string, bazelArgs []string, target string, args []string, structured bool) Command {
 	return &notifyCommand{
 		startupArgs: startupArgs,
 		target:      target,
 		bazelArgs:   bazelArgs,
 		args:        args,
+		structured:  structured,
 	}
 }
 
@@ -91,7 +101,7 @@ func (c *notifyCommand) Start() (*bytes.Buffer, error) {
 	return outputBuffer, nil
 }
 
-func (c *notifyCommand) NotifyOfChanges() *bytes.Buffer {
+func (c *notifyCommand) NotifyOfChanges(changes []Change) *bytes.Buffer {
 	b := bazelNew()
 	b.SetStartupArgs(c.startupArgs)
 	b.SetArguments(c.bazelArgs)
@@ -111,12 +121,14 @@ func (c *notifyCommand) NotifyOfChanges() *bytes.Buffer {
 		if err != nil {
 			log.Errorf("Error writing failure to stdin: %s", err)
 		}
+		c.writeBuildEvent(false, changes)
 	} else {
 		log.Log("IBAZEL BUILD SUCCESS")
 		_, err := c.stdin.Write([]byte("IBAZEL_BUILD_COMPLETED SUCCESS\n"))
 		if err != nil {
 			log.Errorf("Error writing success to stdin: %v", err)
 		}
+		c.writeBuildEvent(true, changes)
 		if !c.IsSubprocessRunning() {
 			log.Log("Restarting process...")
 			c.Terminate()
@@ -124,6 +136,25 @@ func (c *notifyCommand) NotifyOfChanges() *bytes.Buffer {
 		}
 	}
 	return outputBuffer
+}
+
+func (c *notifyCommand) writeBuildEvent(success bool, changes []Change) {
+	if !c.structured {
+		return
+	}
+	event, err := json.Marshal(buildEvent{
+		Version: 1,
+		Type:    "build_completed",
+		Success: success,
+		Changes: changes,
+	})
+	if err != nil {
+		log.Errorf("Error encoding build event: %v", err)
+		return
+	}
+	if _, err := c.stdin.Write(append(append([]byte("IBAZEL_EVENT "), event...), '\n')); err != nil {
+		log.Errorf("Error writing build event to stdin: %v", err)
+	}
 }
 
 func (c *notifyCommand) IsSubprocessRunning() bool {
