@@ -716,3 +716,47 @@ func TestParseTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestIBazelConvertLabelsToPaths(t *testing.T) {
+	log.SetTesting(t)
+
+	i, mockBazel := newIBazel(t)
+	defer i.Cleanup()
+
+	outputBase := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outputBase, "external"), 0o700); err != nil {
+		t.Errorf("failed to create external directory: %v", err)
+		t.FailNow()
+	}
+	mockBazel.SetInfo(map[string]string{
+		"output_base":  outputBase,
+		"install_base": t.TempDir(),
+	})
+
+	repo := t.TempDir()
+	if err := os.Symlink(repo, filepath.Join(outputBase, "external", "repo")); err != nil {
+		t.Errorf("failed to create symlink to repo: %v", err)
+		t.FailNow()
+	}
+
+	labels := make([]string, 0, 1)
+	labels = append(labels, "//first:file")
+	labels = append(labels, "@repo//first:file")
+	labels = append(labels, "//second:file")
+	labels = append(labels, "@repo//second:file")
+	toWatch, err := i.labelsToWatch(labels)
+	if err != nil {
+		t.Errorf("Error converting labels to paths: %s", err)
+	}
+
+	expectedToWatch := make([]string, 0, 1)
+	expectedToWatch = append(expectedToWatch, filepath.Join("first", "file"))
+	if runtime.GOOS != "windows" {
+		expectedToWatch = append(expectedToWatch, filepath.Join(repo, "first", "file"))
+	}
+	expectedToWatch = append(expectedToWatch, filepath.Join("second", "file"))
+	if runtime.GOOS != "windows" {
+		expectedToWatch = append(expectedToWatch, filepath.Join(repo, "second", "file"))
+	}
+	assertEqual(t, expectedToWatch, toWatch, "Resulting paths")
+}
