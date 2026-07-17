@@ -18,8 +18,8 @@
 package fsevents
 
 import (
-	"errors"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/fsnotify/fsevents"
@@ -45,13 +45,9 @@ func (w *realFSEventsWatcher) Close() error {
 // UpdateAll implements ibazel/fswatcher/common.Watcher
 func (w *realFSEventsWatcher) UpdateAll(names []string) error {
 	w.es.Stop()
-	commonRoot, err := findCommonRoot(names)
-	if err != nil {
-		return err
-	}
 	es := &fsevents.EventStream{
 		Events: make(chan []fsevents.Event),
-		Paths:  commonRoot,
+		Paths:  findCommonRoots(names),
 		Flags:  w.es.Flags,
 	}
 	w.es = es
@@ -104,32 +100,41 @@ func newEvent(name string, mask fsevents.EventFlags) (common.Event, bool) {
 	return e, true
 }
 
-// Find the longest common root path of all directories to watch.
-func findCommonRoot(names []string) ([]string, error) {
+// FSEvents recursively watches each path but accepts at most 4096 paths. Collapse
+// each top-level tree independently without requiring every path to share one root.
+func findCommonRoots(names []string) []string {
 	if len(names) == 0 {
-		return []string{}, nil
+		return []string{}
 	}
 
-	rootSplit := strings.Split(strings.Trim(names[0], "/"), "/")
-	rootLength := len(rootSplit)
-
-	for _, dir := range names {
-		split := strings.Split(strings.Trim(dir, "/"), "/")
-		commonLength := 0
-		for i := 0; i < rootLength && i < len(split); i++ {
-			if rootSplit[i] != split[i] {
-				break
-			}
-			commonLength = i + 1
+	directoriesByRoot := make(map[string][][]string)
+	for _, name := range names {
+		trimmed := strings.Trim(name, "/")
+		if trimmed == "" {
+			return []string{"/"}
 		}
-		rootLength = commonLength
+		split := strings.Split(trimmed, "/")
+		directoriesByRoot[split[0]] = append(directoriesByRoot[split[0]], split)
 	}
 
-	if rootLength == 0 {
-		return nil, errors.New("could not find common root of directories")
+	roots := make([]string, 0, len(directoriesByRoot))
+	for _, directories := range directoriesByRoot {
+		rootLength := len(directories[0])
+		for _, directory := range directories[1:] {
+			commonLength := 0
+			for i := 0; i < rootLength && i < len(directory); i++ {
+				if directories[0][i] != directory[i] {
+					break
+				}
+				commonLength = i + 1
+			}
+			rootLength = commonLength
+		}
+		roots = append(roots, "/"+filepath.Join(directories[0][:rootLength]...)+"/")
 	}
 
-	return []string{"/" + filepath.Join(rootSplit[:rootLength]...) + "/"}, nil
+	sort.Strings(roots)
+	return roots
 }
 
 func NewWatcher() (common.Watcher, error) {

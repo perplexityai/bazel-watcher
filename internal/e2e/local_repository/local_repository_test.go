@@ -3,10 +3,11 @@ package simple
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,24 @@ var (
 	secondaryWd2 string
 )
 
+func createSecondaryWorkspace(wd string) error {
+	if err := os.Mkdir(wd, 0777); err != nil {
+		return fmt.Errorf("os.Mkdir(%q): %w", wd, err)
+	}
+	for file, contents := range map[string]string{
+		".bazelversion": "6.5.0",
+		"BUILD.bazel":   secondaryBuild,
+		"lib.sh":        secondaryLib,
+		"WORKSPACE":     "",
+		"MODULE.bazel":  "",
+	} {
+		if err := ioutil.WriteFile(filepath.Join(wd, file), []byte(contents), 0777); err != nil {
+			return fmt.Errorf("failed to write file %q: %w", file, err)
+		}
+	}
+	return nil
+}
+
 func TestMain(m *testing.M) {
 	e2e.TestMain(m, e2e.Args{
 		Main: mainFiles,
@@ -66,21 +85,9 @@ func TestMain(m *testing.M) {
 			secondaryWd, _ = filepath.Abs(filepath.Join("..", "secondary"))
 			secondaryWd2, _ = filepath.Abs(filepath.Join("..", "secondary-2"))
 
-			// Manually create files in the secondary workspaces.
 			for _, wd := range []string{secondaryWd, secondaryWd2} {
-				if err := os.Mkdir(wd, 0777); err != nil {
-					log.Fatalf("os.Mkdir(%q): %v", wd, err)
-				}
-				for file, contents := range map[string]string{
-					".bazelversion": "6.5.0",
-					"BUILD.bazel": secondaryBuild,
-					"lib.sh":      secondaryLib,
-					"WORKSPACE":   "",
-					"MODULE.bazel":   "",
-				} {
-					if err := ioutil.WriteFile(filepath.Join(wd, file), []byte(contents), 0777); err != nil {
-						log.Fatalf("Failed to write file %q: %v", file, err)
-					}
+				if err := createSecondaryWorkspace(wd); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -97,7 +104,7 @@ func TestRunWithModifiedFile(t *testing.T) {
 	ibazel.Run([]string{}, "//:test")
 	defer ibazel.Kill()
 
-	ibazel.ExpectOutput("hello!", 50 * time.Second)
+	ibazel.ExpectOutput("hello!", 50*time.Second)
 
 	ioutil.WriteFile(
 		filepath.Join(secondaryWd, "lib.sh"), []byte(secondaryLibAlt), 0777)
@@ -117,5 +124,50 @@ func TestRunWithRepositoryOverrideModifiedFile(t *testing.T) {
 
 	ioutil.WriteFile(
 		filepath.Join(secondaryWd2, "lib.sh"), []byte(secondaryLibAlt), 0777)
+	ibazel.ExpectOutput("hello2!")
+}
+
+func TestRunWithDisjointRepositoryOverrideModifiedFile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("FSEvents is only used on macOS")
+	}
+
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot, err := os.MkdirTemp(currentUser.HomeDir, "ibazel-disjoint-root-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(repositoryRoot) })
+
+	disjointRepository := filepath.Join(repositoryRoot, "secondary")
+	if err := createSecondaryWorkspace(disjointRepository); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceRoot := strings.Split(strings.Trim(workspace, "/"), "/")[0]
+	repositoryTopLevel := strings.Split(strings.Trim(disjointRepository, "/"), "/")[0]
+	if workspaceRoot == repositoryTopLevel {
+		t.Fatalf("test paths share top-level directory %q", workspaceRoot)
+	}
+
+	ibazel := e2e.SetUp(t)
+	ibazel.Run([]string{fmt.Sprintf("--override_repository=secondary=%s", disjointRepository)}, "//:test")
+	defer ibazel.Kill()
+
+	ibazel.ExpectOutput("hello!", 50*time.Second)
+
+	if err := ioutil.WriteFile(filepath.Join(disjointRepository, "lib.sh"), []byte(secondaryLibAlt), 0777); err != nil {
+		t.Fatal(err)
+	}
 	ibazel.ExpectOutput("hello2!")
 }

@@ -18,11 +18,12 @@
 package fsevents
 
 import (
-	"github.com/google/go-cmp/cmp"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
-func TestFindCommonRoot(t *testing.T) {
+func TestFindCommonRoots(t *testing.T) {
 	tests := []struct {
 		in   []string
 		want []string
@@ -34,6 +35,21 @@ func TestFindCommonRoot(t *testing.T) {
 				"/a/d/",
 			},
 			[]string{"/a/"},
+		},
+		// Finds independent roots instead of watching the filesystem root.
+		{
+			[]string{
+				"/a/b/c/",
+				"/a/d/",
+				"/b/e/",
+				"/b/f/",
+			},
+			[]string{"/a/", "/b/"},
+		},
+		// The filesystem root covers every other path.
+		{
+			[]string{"/", "/a/b/"},
+			[]string{"/"},
 		},
 		// Finds common sub-root of multiple recursive directories
 		{
@@ -59,19 +75,9 @@ func TestFindCommonRoot(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		got, err := findCommonRoot(test.in)
-		if err != nil {
-			t.Errorf("unexpected error %v", err.Error())
-		}
+		got := findCommonRoots(test.in)
 		if diff := cmp.Diff(got, test.want); diff != "" {
-			t.Errorf("findCommonRoot diff (-got,+want):\n%s", diff)
+			t.Errorf("findCommonRoots diff (-got,+want):\n%s", diff)
 		}
-	}
-}
-
-func TestNoCommonRootError(t *testing.T) {
-	_, err := findCommonRoot([]string{"/a/", "/b/"})
-	if err == nil {
-		t.Error("expected error when there is no common root")
 	}
 }
