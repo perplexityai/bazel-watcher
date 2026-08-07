@@ -17,6 +17,7 @@ package ibazel
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -42,6 +43,7 @@ var osExit = os.Exit
 var bazelNew = bazel.New
 var commandDefaultCommand = command.DefaultCommand
 var commandNotifyCommand = command.NotifyCommand
+var notifyOutputGroups = flag.String("notify_output_groups", "", "Comma-separated Bazel output groups included in structured build notifications")
 var exitMessages = map[os.Signal]string{
 	syscall.SIGINT:  "Subprocess killed from getting SIGINT (trigger SIGINT again to stop ibazel)",
 	syscall.SIGTERM: "Subprocess killed from getting SIGTERM",
@@ -454,10 +456,24 @@ func (i *IBazel) setupRun(target string) command.Command {
 
 	if commandNotify {
 		log.Logf("Launching with notifications")
-		return commandNotifyCommand(i.startupArgs, i.bazelArgs, target, i.args, structuredNotify)
+		var outputGroups []string
+		if structuredNotify {
+			outputGroups = splitCommaSeparated(*notifyOutputGroups)
+		}
+		return commandNotifyCommand(i.startupArgs, i.bazelArgs, target, i.args, structuredNotify, outputGroups)
 	} else {
 		return commandDefaultCommand(i.startupArgs, i.bazelArgs, target, i.args)
 	}
+}
+
+func splitCommaSeparated(value string) []string {
+	var values []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
 }
 
 func (i *IBazel) run(targets ...string) (*bytes.Buffer, error) {

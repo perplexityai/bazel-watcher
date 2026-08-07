@@ -83,6 +83,23 @@ IBAZEL_EVENT {"version":1,"type":"build_completed","success":true,"changes":[{"p
 
 `kind` is `source` for source-file changes and `graph` for build-file changes.
 
+Structured notification targets may request Bazel output groups with
+`--notify_output_groups`. iBazel adds those groups to each build and reads them
+from Bazel's Build Event Protocol. Successful events include the complete,
+deduplicated artifact set for each requested group:
+
+```text
+ibazel --notify_output_groups=frontend_dev_generated,frontend_dev_manifest run //app:dev
+
+IBAZEL_EVENT {"version":1,"type":"build_completed","success":true,"changes":[{"path":"/workspace/schema.idl","kind":"source"}],"output_groups":{"frontend_dev_generated":[{"path":"bazel-out/bin/app/schema.ts","uri":"file:///workspace/bazel-out/bin/app/schema.ts","digest":"abc123"}],"frontend_dev_manifest":[]},"output_groups_complete":true}
+```
+
+Consumers should only replace their previous artifact set when
+`output_groups_complete` is true. Failed builds and BEP parsing failures leave
+the field unset, allowing consumers to retain their last-good outputs. Artifact
+digests, when present, allow consumers to invalidate only generated outputs
+whose contents changed.
+
 ## Output Runner
 
 iBazel is capable of producing and running commands from the output of Bazel

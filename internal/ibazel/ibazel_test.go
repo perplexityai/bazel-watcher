@@ -454,14 +454,18 @@ func TestIBazelRun_notifyPreexistiingJobWhenStarting(t *testing.T) {
 func TestSetupRunNegotiatesStructuredNotifications(t *testing.T) {
 	oldCommandNotifyCommand := commandNotifyCommand
 	defer func() { commandNotifyCommand = oldCommandNotifyCommand }()
+	oldNotifyOutputGroups := *notifyOutputGroups
+	*notifyOutputGroups = "generated, manifest"
+	defer func() { *notifyOutputGroups = oldNotifyOutputGroups }()
 
 	for _, test := range []struct {
-		name       string
-		tags       []string
-		structured bool
+		name         string
+		tags         []string
+		structured   bool
+		outputGroups []string
 	}{
 		{name: "legacy", tags: []string{"ibazel_notify_changes"}},
-		{name: "structured", tags: []string{"ibazel_notify_changes", "ibazel_notify_changes_v1"}, structured: true},
+		{name: "structured", tags: []string{"ibazel_notify_changes", "ibazel_notify_changes_v1"}, structured: true, outputGroups: []string{"generated", "manifest"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			i, mockBazel := newIBazel(t)
@@ -486,13 +490,16 @@ func TestSetupRunNegotiatesStructuredNotifications(t *testing.T) {
 			})
 
 			var structured bool
-			commandNotifyCommand = func(_ []string, _ []string, _ string, _ []string, enabled bool) command.Command {
+			var outputGroups []string
+			commandNotifyCommand = func(_ []string, _ []string, _ string, _ []string, enabled bool, groups []string) command.Command {
 				structured = enabled
+				outputGroups = groups
 				return &mockCommand{}
 			}
 
 			i.setupRun(target)
 			assertEqual(t, test.structured, structured, "Structured notification mode")
+			assertEqual(t, test.outputGroups, outputGroups, "Notification output groups")
 		})
 	}
 }
