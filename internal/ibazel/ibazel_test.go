@@ -491,7 +491,7 @@ func TestIBazelRunStartsBeforeWatchQuery(t *testing.T) {
 	})
 
 	cmd := &mockCommand{}
-	commandNotifyCommand = func(_ []string, _ []string, _ string, _ []string, _ bool) command.Command {
+	commandNotifyCommand = func(_ []string, _ []string, _ string, _ []string, _ bool, _ []string) command.Command {
 		return cmd
 	}
 
@@ -516,16 +516,20 @@ func TestIBazelRunStartsBeforeWatchQuery(t *testing.T) {
 func TestPrepareRunNegotiatesNotificationsAndInitialState(t *testing.T) {
 	oldCommandNotifyCommand := commandNotifyCommand
 	defer func() { commandNotifyCommand = oldCommandNotifyCommand }()
+	oldNotifyOutputGroups := *notifyOutputGroups
+	*notifyOutputGroups = "generated, manifest"
+	defer func() { *notifyOutputGroups = oldNotifyOutputGroups }()
 
 	for _, test := range []struct {
 		name         string
 		tags         []string
 		structured   bool
 		initialState State
+		outputGroups []string
 	}{
 		{name: "default", initialState: QUERY},
 		{name: "legacy", tags: []string{"ibazel_notify_changes"}, initialState: RUN},
-		{name: "structured", tags: []string{"ibazel_notify_changes", "ibazel_notify_changes_v1"}, structured: true, initialState: RUN},
+		{name: "structured", tags: []string{"ibazel_notify_changes", "ibazel_notify_changes_v1"}, structured: true, initialState: RUN, outputGroups: []string{"generated", "manifest"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			i, mockBazel := newIBazel(t)
@@ -550,14 +554,17 @@ func TestPrepareRunNegotiatesNotificationsAndInitialState(t *testing.T) {
 			})
 
 			var structured bool
-			commandNotifyCommand = func(_ []string, _ []string, _ string, _ []string, enabled bool) command.Command {
+			var outputGroups []string
+			commandNotifyCommand = func(_ []string, _ []string, _ string, _ []string, enabled bool, groups []string) command.Command {
 				structured = enabled
+				outputGroups = groups
 				return &mockCommand{}
 			}
 
 			i.prepareRun(target)
 			assertEqual(t, test.structured, structured, "Structured notification mode")
 			assertEqual(t, test.initialState, i.state, "Initial run state")
+			assertEqual(t, test.outputGroups, outputGroups, "Notification output groups")
 		})
 	}
 }
