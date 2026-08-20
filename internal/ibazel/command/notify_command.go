@@ -40,12 +40,14 @@ type notifyCommand struct {
 }
 
 type buildEvent struct {
-	Version              int                     `json:"version"`
-	Type                 string                  `json:"type"`
-	Success              bool                    `json:"success"`
-	Changes              []Change                `json:"changes"`
-	OutputGroups         map[string][]bep.Output `json:"output_groups,omitempty"`
-	OutputGroupsComplete bool                    `json:"output_groups_complete,omitempty"`
+	Version                 int                     `json:"version"`
+	Type                    string                  `json:"type"`
+	Success                 bool                    `json:"success"`
+	Changes                 []Change                `json:"changes"`
+	AffectedTargets         []string                `json:"affected_targets,omitempty"`
+	AffectedTargetsComplete bool                    `json:"affected_targets_complete,omitempty"`
+	OutputGroups            map[string][]bep.Output `json:"output_groups,omitempty"`
+	OutputGroupsComplete    bool                    `json:"output_groups_complete,omitempty"`
 }
 
 // NotifyCommand is an alternate mode for starting a command. In this mode the
@@ -107,7 +109,7 @@ func (c *notifyCommand) Start() (*bytes.Buffer, error) {
 	return outputBuffer, nil
 }
 
-func (c *notifyCommand) NotifyOfChanges(changes []Change) *bytes.Buffer {
+func (c *notifyCommand) NotifyOfChanges(changes []Change, impact ChangeImpact) *bytes.Buffer {
 	b := bazelNew()
 	b.SetStartupArgs(c.startupArgs)
 	bepPath, cleanup := c.buildEventFile()
@@ -133,7 +135,7 @@ func (c *notifyCommand) NotifyOfChanges(changes []Change) *bytes.Buffer {
 		if err != nil {
 			log.Errorf("Error writing failure to stdin: %s", err)
 		}
-		c.writeBuildEvent(false, changes, nil, false)
+		c.writeBuildEvent(false, changes, impact, nil, false)
 	} else {
 		log.Log("IBAZEL BUILD SUCCESS")
 		_, err := c.stdin.Write([]byte("IBAZEL_BUILD_COMPLETED SUCCESS\n"))
@@ -141,7 +143,7 @@ func (c *notifyCommand) NotifyOfChanges(changes []Change) *bytes.Buffer {
 			log.Errorf("Error writing success to stdin: %v", err)
 		}
 		outputGroups, complete := c.readOutputGroups(bepPath)
-		c.writeBuildEvent(true, changes, outputGroups, complete)
+		c.writeBuildEvent(true, changes, impact, outputGroups, complete)
 		if !c.IsSubprocessRunning() {
 			log.Log("Restarting process...")
 			c.Terminate()
@@ -151,17 +153,19 @@ func (c *notifyCommand) NotifyOfChanges(changes []Change) *bytes.Buffer {
 	return outputBuffer
 }
 
-func (c *notifyCommand) writeBuildEvent(success bool, changes []Change, outputGroups map[string][]bep.Output, outputGroupsComplete bool) {
+func (c *notifyCommand) writeBuildEvent(success bool, changes []Change, impact ChangeImpact, outputGroups map[string][]bep.Output, outputGroupsComplete bool) {
 	if !c.structured {
 		return
 	}
 	event, err := json.Marshal(buildEvent{
-		Version:              1,
-		Type:                 "build_completed",
-		Success:              success,
-		Changes:              changes,
-		OutputGroups:         outputGroups,
-		OutputGroupsComplete: outputGroupsComplete,
+		Version:                 1,
+		Type:                    "build_completed",
+		Success:                 success,
+		Changes:                 changes,
+		AffectedTargets:         impact.Targets,
+		AffectedTargetsComplete: impact.Complete,
+		OutputGroups:            outputGroups,
+		OutputGroupsComplete:    outputGroupsComplete,
 	})
 	if err != nil {
 		log.Errorf("Error encoding build event: %v", err)
