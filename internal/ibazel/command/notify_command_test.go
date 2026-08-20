@@ -40,7 +40,7 @@ func TestNotifyCommandStructuredBuildEventWithOutputGroups(t *testing.T) {
 		"generated": {{Path: "bazel-out/bin/schema.ts", URI: "file:///execroot/bazel-out/bin/schema.ts", Digest: "abc123"}},
 	}
 
-	c.writeBuildEvent(true, nil, groups, true)
+	c.writeBuildEvent(true, nil, ChangeImpact{}, groups, true)
 
 	want := "IBAZEL_EVENT {\"version\":1,\"type\":\"build_completed\",\"success\":true,\"changes\":null,\"output_groups\":{\"generated\":[{\"path\":\"bazel-out/bin/schema.ts\",\"uri\":\"file:///execroot/bazel-out/bin/schema.ts\",\"digest\":\"abc123\"}]},\"output_groups_complete\":true}\n"
 	if got := stdin.String(); got != want {
@@ -89,9 +89,12 @@ func TestNotifyCommandStructuredBuildEvent(t *testing.T) {
 		{Path: "/workspace/frontend/BUILD", Kind: "graph"},
 	}
 
-	c.writeBuildEvent(true, changes, nil, false)
+	c.writeBuildEvent(true, changes, ChangeImpact{
+		Targets:  []string{"//frontend:dev"},
+		Complete: true,
+	}, nil, false)
 
-	want := "IBAZEL_EVENT {\"version\":1,\"type\":\"build_completed\",\"success\":true,\"changes\":[{\"path\":\"/workspace/frontend/app.tsx\",\"kind\":\"source\"},{\"path\":\"/workspace/frontend/BUILD\",\"kind\":\"graph\"}]}\n"
+	want := "IBAZEL_EVENT {\"version\":1,\"type\":\"build_completed\",\"success\":true,\"changes\":[{\"path\":\"/workspace/frontend/app.tsx\",\"kind\":\"source\"},{\"path\":\"/workspace/frontend/BUILD\",\"kind\":\"graph\"}],\"affected_targets\":[\"//frontend:dev\"],\"affected_targets_complete\":true}\n"
 	if got := stdin.String(); got != want {
 		t.Errorf("structured build event = %q, want %q", got, want)
 	}
@@ -101,7 +104,7 @@ func TestNotifyCommandLegacyProtocolDoesNotWriteBuildEvent(t *testing.T) {
 	stdin := &bufferWriteCloser{}
 	c := &notifyCommand{stdin: stdin}
 
-	c.writeBuildEvent(true, []Change{{Path: "/workspace/app.ts", Kind: "source"}}, nil, false)
+	c.writeBuildEvent(true, []Change{{Path: "/workspace/app.ts", Kind: "source"}}, ChangeImpact{}, nil, false)
 
 	if got := stdin.String(); got != "" {
 		t.Errorf("legacy protocol wrote structured event %q", got)
@@ -136,11 +139,11 @@ func TestNotifyCommand(t *testing.T) {
 	bazelNew = func() bazel.Bazel { return b }
 	defer func() { bazelNew = oldBazelNew }()
 
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 	b.BuildError(errors.New("Demo error"))
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 	b.BuildError(nil)
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 
 	b.AssertActions(t, [][]string{
 		{"SetStartupArgs"},
@@ -204,14 +207,14 @@ func TestNotifyCommand_Restart(t *testing.T) {
 		t.Errorf("new subprocess shouldn't have been started yet. State: %v", pg.RootProcess().ProcessState)
 	}
 
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 	if c.IsSubprocessRunning() {
 		t.Errorf("process should not start with build errors. State: %v", pg.RootProcess().ProcessState)
 	}
 
 	// Since the process isn't currently running, this should start it.
 	b.BuildError(nil)
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 	if !c.IsSubprocessRunning() {
 		t.Errorf("subprocess should have started. State: %v", pg.RootProcess().ProcessState)
 	}
@@ -224,14 +227,14 @@ func TestNotifyCommand_Restart(t *testing.T) {
 	}
 
 	b.BuildError(errors.New("Demo error"))
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 	if c.IsSubprocessRunning() {
 		t.Errorf("subprocess should not restart with build errors. State: %v", pg.RootProcess().ProcessState)
 	}
 
 	// Since the process isn't currently running, this should re-start it.
 	b.BuildError(nil)
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 	if !c.IsSubprocessRunning() {
 		t.Errorf("subprocess should have been restarted. State: %v", pg.RootProcess().ProcessState)
 	}
@@ -241,7 +244,7 @@ func TestNotifyCommand_Restart(t *testing.T) {
 		t.Error("PIDs of restarted process should be different that original process")
 	}
 
-	c.NotifyOfChanges(nil)
+	c.NotifyOfChanges(nil, ChangeImpact{})
 	if pid2 != c.pg.RootProcess().Process.Pid {
 		t.Error("non-dead process was restarted")
 	}
