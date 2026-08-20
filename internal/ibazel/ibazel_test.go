@@ -525,16 +525,16 @@ func TestPrepareRunNegotiatesNotificationsAndInitialState(t *testing.T) {
 	defer func() { *notifyOutputGroups = oldNotifyOutputGroups }()
 
 	for _, test := range []struct {
-		name           string
-		tags           []string
-		structured     bool
-		initialState   State
-		outputGroups   []string
-		restartTargets []string
+		name          string
+		tags          []string
+		structured    bool
+		initialState  State
+		outputGroups  []string
+		directTargets []string
 	}{
 		{name: "default", initialState: QUERY},
 		{name: "legacy", tags: []string{"ibazel_notify_changes"}, initialState: RUN},
-		{name: "structured", tags: []string{"ibazel_notify_changes", "ibazel_notify_changes_v1"}, structured: true, initialState: RUN, outputGroups: []string{"generated", "manifest"}, restartTargets: []string{"//path/to:rpc", "//path/to:electron"}},
+		{name: "structured", tags: []string{"ibazel_notify_changes", "ibazel_notify_changes_v1"}, structured: true, initialState: RUN, outputGroups: []string{"generated", "manifest"}, directTargets: []string{"//path/to:rpc", "//path/to:electron"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			i, mockBazel := newIBazel(t)
@@ -542,23 +542,18 @@ func TestPrepareRunNegotiatesNotificationsAndInitialState(t *testing.T) {
 
 			target := "//path/to:target"
 			attributeType := blaze_query.Attribute_STRING_LIST
-			labelListType := blaze_query.Attribute_LABEL_LIST
 			mockBazel.AddCQueryResponse(target, &analysispb.CqueryResult{
 				Results: []*analysispb.ConfiguredTarget{{
 					Target: &blaze_query.Target{
 						Type: blaze_query.Target_RULE.Enum(),
 						Rule: &blaze_query.Rule{
-							Name: proto.String(target),
+							Name:      proto.String(target),
+							RuleInput: test.directTargets,
 							Attribute: []*blaze_query.Attribute{
 								{
 									Name:            proto.String("tags"),
 									Type:            &attributeType,
 									StringListValue: test.tags,
-								},
-								{
-									Name:            proto.String("commands"),
-									Type:            &labelListType,
-									StringListValue: test.restartTargets,
 								},
 							},
 						},
@@ -578,7 +573,7 @@ func TestPrepareRunNegotiatesNotificationsAndInitialState(t *testing.T) {
 			assertEqual(t, test.structured, structured, "Structured notification mode")
 			assertEqual(t, test.initialState, initialState, "Initial run state")
 			assertEqual(t, test.outputGroups, outputGroups, "Notification output groups")
-			assertEqual(t, test.restartTargets, i.restartTargets, "Restart targets")
+			assertEqual(t, test.directTargets, i.directTargets, "Direct targets")
 		})
 	}
 }
@@ -643,7 +638,7 @@ func TestSourceOwnersDriveChangeImpact(t *testing.T) {
 		configuredSource(sharedSource),
 	}}
 
-	i.restartTargets = []string{"//app:rpc", "//app:electron"}
+	i.directTargets = []string{"//app:rpc", "//app:electron"}
 	i.changeOwners, i.ownershipReady = i.sourceOwnersFromGraph(graph, map[string]string{
 		rpcSource:      rpcSource,
 		electronSource: electronSource,

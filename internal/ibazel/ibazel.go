@@ -88,7 +88,7 @@ type IBazel struct {
 	lifecycleListeners []Lifecycle
 	pendingChanges     []command.Change
 	changeOwners       map[string][]string
-	restartTargets     []string
+	directTargets      []string
 	ownershipReady     bool
 	runCommandNotifies bool
 	runCommandStarted  bool
@@ -449,7 +449,6 @@ func (i *IBazel) setupRun(target string) command.Command {
 
 	commandNotify := false
 	structuredNotify := false
-	var restartTargets []string
 	for _, attr := range rule.Attribute {
 		if *attr.Name == "tags" && *attr.Type == blaze_query.Attribute_STRING_LIST {
 			if contains(attr.StringListValue, "ibazel_notify_changes") {
@@ -459,11 +458,8 @@ func (i *IBazel) setupRun(target string) command.Command {
 				structuredNotify = true
 			}
 		}
-		if *attr.Name == "commands" && *attr.Type == blaze_query.Attribute_LABEL_LIST {
-			restartTargets = append(restartTargets, attr.StringListValue...)
-		}
 	}
-	i.restartTargets = restartTargets
+	i.directTargets = append([]string(nil), rule.RuleInput...)
 
 	if commandNotify {
 		i.runCommandNotifies = true
@@ -679,7 +675,7 @@ func (i *IBazel) sourceFilesFromGraph(graph *analysispb.CqueryResult) ([]string,
 }
 
 func (i *IBazel) sourceOwnersFromGraph(graph *analysispb.CqueryResult, pathsByLabel map[string]string) (map[string][]string, bool) {
-	if len(i.restartTargets) == 0 {
+	if len(i.directTargets) == 0 {
 		return nil, false
 	}
 
@@ -702,7 +698,10 @@ func (i *IBazel) sourceOwnersFromGraph(graph *analysispb.CqueryResult, pathsByLa
 
 	ownersByLabel := make(map[string]map[string]struct{})
 	ownersByLocation := make(map[string]map[string]struct{})
-	for _, root := range i.restartTargets {
+	for _, root := range i.directTargets {
+		if _, ok := locations[root]; !ok {
+			continue
+		}
 		seen := make(map[string]struct{})
 		stack := []string{root}
 		for len(stack) > 0 {
