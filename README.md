@@ -87,6 +87,19 @@ IBAZEL_EVENT {"version":1,"type":"build_completed","success":true,"changes":[{"p
 
 `kind` is `source` for source-file changes and `graph` for build-file changes.
 
+For notification rules with a `commands` label-list attribute, iBazel preserves
+ownership from the post-start configured dependency query. Events include the
+command targets affected by the changed files:
+
+```text
+IBAZEL_EVENT {"version":1,"type":"build_completed","success":true,"changes":[{"path":"/workspace/rpc/main.rs","kind":"source"}],"affected_targets":["//app:rpc"],"affected_targets_complete":true}
+```
+
+Consumers may restart only listed commands when `affected_targets_complete` is
+true. When it is absent, ownership was unavailable for at least one change and
+consumers should use their safe fallback. This uses the same post-start cquery
+that discovers watched files; it does not enable Bazel's all-action BEP stream.
+
 Structured notification targets may request Bazel output groups with
 `--notify_output_groups`. iBazel adds those groups to each build and reads them
 from Bazel's Build Event Protocol. Successful events include the complete,
