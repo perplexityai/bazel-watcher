@@ -521,7 +521,11 @@ func TestIBazelWatchDiscoveryReusesRepositoryMetadata(t *testing.T) {
 		"install_base": t.TempDir(),
 	})
 
-	buildFiles, sourceFiles, err := i.queryForWatchFiles(target)
+	buildFiles, graph, localRepositories, err := i.queryForBuildFiles(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceFiles, _, err := i.sourceFilesFromGraph(graph, localRepositories)
 	if err != nil {
 		t.Fatal(err)
 	}

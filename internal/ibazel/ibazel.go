@@ -615,8 +615,7 @@ func (i *IBazel) queryForBuildFiles(targets string) ([]string, *analysispb.Cquer
 	quotedBuildTargets := make([]string, 0, len(targetRes.Results))
 	for _, configuredTarget := range targetRes.Results {
 		target := configuredTarget.GetTarget()
-		switch *target.Type {
-		case blaze_query.Target_RULE:
+		if *target.Type == blaze_query.Target_RULE {
 			label := target.GetRule().GetName()
 			if strings.HasPrefix(label, "@") {
 				repo, _ := parseTarget(label)
@@ -675,16 +674,6 @@ func (i *IBazel) queryForBuildFiles(targets string) ([]string, *analysispb.Cquer
 	}
 	return paths, targetRes, localRepositories, nil
 }
-
-func (i *IBazel) queryForWatchFiles(targets string) ([]string, []string, error) {
-	buildFiles, graph, localRepositories, err := i.queryForBuildFiles(targets)
-	if err != nil {
-		return nil, nil, err
-	}
-	sourceFiles, _, err := i.sourceFilesFromGraph(graph, localRepositories)
-	return buildFiles, sourceFiles, err
-}
-
 func (i *IBazel) sourceFilesFromGraph(graph *analysispb.CqueryResult, localRepositories map[string]string) ([]string, map[string]string, error) {
 	labels := make([]string, 0, len(graph.Results))
 	for _, configuredTarget := range graph.Results {
