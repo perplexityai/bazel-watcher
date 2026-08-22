@@ -42,7 +42,10 @@ go_library(
 
 go_test(
     name = "ibazel_test",
-    srcs = ["ibazel_test.go"],
+    srcs = [
+        "ibazel_benchmark_test.go",
+        "ibazel_test.go",
+    ],
     embed = [":ibazel"],
     importpath = "github.com/bazelbuild/bazel-watcher/ibazel",
     deps = [
