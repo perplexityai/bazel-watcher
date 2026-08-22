@@ -147,6 +147,17 @@ func (b *MockBazel) Wait() error {
 func (b *MockBazel) Cancel() {
 	b.actions = append(b.actions, []string{"Cancel"})
 }
+
+func (b *MockBazel) ActionCount(name string) int {
+	count := 0
+	for _, action := range b.actions {
+		if len(action) > 0 && action[0] == name {
+			count++
+		}
+	}
+	return count
+}
+
 func (b *MockBazel) AssertActions(t *testing.T, expected [][]string) {
 	t.Helper()
 

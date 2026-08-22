@@ -314,6 +314,16 @@ func TestIBazelLoop(t *testing.T) {
 
 	assertState(QUERY)
 	step()
+	if got := mockBazel.ActionCount("CQuery"); got != 1 {
+		t.Errorf("initial watch discovery used %d configured queries, want 1", got)
+	}
+	resolvedSource, err := filepath.EvalSymlinks(sourceFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := i.filesWatched[fakeSourceWatcher][resolvedSource]; !ok {
+		t.Errorf("dependency query source %q was not watched", resolvedSource)
+	}
 	i.filesWatched[fakeBuildWatcher][buildFilePath] = struct{}{}
 	i.filesWatched[fakeSourceWatcher][sourceFilePath] = struct{}{}
 	assertState(RUN)
@@ -339,6 +349,9 @@ func TestIBazelLoop(t *testing.T) {
 	assertState(QUERY)
 	step()
 	assertState(RUN)
+	if got := mockBazel.ActionCount("CQuery"); got != 2 {
+		t.Errorf("two discovery cycles used %d configured queries, want 2", got)
+	}
 	step() // Actually run the command
 	assertRun()
 	assertState(WAIT)
@@ -422,6 +435,111 @@ func TestIBazelTest(t *testing.T) {
 	mockBazel.AssertActions(t, expected)
 }
 
+func TestIBazelTestCachesTargetRules(t *testing.T) {
+	log.SetTesting(t)
+
+	i, mockBazel := newIBazel(t)
+	defer i.Cleanup()
+	target := "//path/to:target"
+	mockBazel.AddCQueryResponse(target, &analysispb.CqueryResult{
+		Results: []*analysispb.ConfiguredTarget{{
+			Target: &blaze_query.Target{
+				Type: blaze_query.Target_RULE.Enum(),
+				Rule: &blaze_query.Rule{Name: proto.String(target)},
+			},
+		}},
+	})
+
+	i.test(target)
+	i.test(target)
+	if got := mockBazel.ActionCount("CQuery"); got != 1 {
+		t.Fatalf("two test runs used %d configured queries, want 1", got)
+	}
+
+	i.testRulesCached = false
+	i.test(target)
+	if got := mockBazel.ActionCount("CQuery"); got != 2 {
+		t.Errorf("test after graph invalidation used %d configured queries, want 2", got)
+	}
+}
+
+func TestIBazelTestSkipsTargetQueryWithExplicitOutput(t *testing.T) {
+	log.SetTesting(t)
+
+	i, mockBazel := newIBazel(t)
+	defer i.Cleanup()
+	i.SetBazelArgs([]string{"--test_output=summary"})
+
+	i.test("//path/to:target")
+	if got := mockBazel.ActionCount("CQuery"); got != 0 {
+		t.Errorf("explicit test output used %d configured queries, want 0", got)
+	}
+}
+
+func TestIBazelWatchDiscoveryReusesRepositoryMetadata(t *testing.T) {
+	log.SetTesting(t)
+
+	i, mockBazel := newIBazel(t)
+	defer i.Cleanup()
+	target := "//app:target"
+	sourceLabel := "//app:source.ts"
+	mockBazel.AddCQueryResponse(fmt.Sprintf("deps(set(%s))", target), &analysispb.CqueryResult{
+		Results: []*analysispb.ConfiguredTarget{
+			{
+				Target: &blaze_query.Target{
+					Type: blaze_query.Target_RULE.Enum(),
+					Rule: &blaze_query.Rule{Name: proto.String(target)},
+				},
+			},
+			{
+				Target: &blaze_query.Target{
+					Type:       blaze_query.Target_SOURCE_FILE.Enum(),
+					SourceFile: &blaze_query.SourceFile{Name: proto.String(sourceLabel)},
+				},
+			},
+		},
+	})
+	mockBazel.AddQueryResponse(fmt.Sprintf("buildfiles(set(%q))", target), &blaze_query.QueryResult{
+		Target: []*blaze_query.Target{{
+			Type:       blaze_query.Target_SOURCE_FILE.Enum(),
+			SourceFile: &blaze_query.SourceFile{Name: proto.String("//app:BUILD")},
+		}},
+	})
+
+	outputBase := t.TempDir()
+	external := filepath.Join(outputBase, "external")
+	if err := os.Mkdir(external, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(t.TempDir(), filepath.Join(external, "repo")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mockBazel.SetInfo(map[string]string{
+		"output_base":  outputBase,
+		"install_base": t.TempDir(),
+	})
+
+	buildFiles, sourceFiles, err := i.queryForWatchFiles(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, []string{filepath.Join("app", "BUILD")}, buildFiles, "Build files")
+	assertEqual(t, []string{filepath.Join("app", "source.ts")}, sourceFiles, "Source files")
+	if got := mockBazel.ActionCount("CQuery"); got != 1 {
+		t.Errorf("watch discovery used %d configured queries, want 1", got)
+	}
+	if runtime.GOOS != "windows" {
+		if got := mockBazel.ActionCount("Info"); got != 2 {
+			t.Errorf("initialization and watch discovery used %d info calls, want 2", got)
+		}
+		if got := mockBazel.ActionCount("DumpRepoMapping"); got != 1 {
+			t.Errorf("watch discovery used %d repository mapping calls, want 1", got)
+		}
+	}
+}
+
 func TestIBazelRun_notifyPreexistiingJobWhenStarting(t *testing.T) {
 	log.SetTesting(t)
 
@@ -483,7 +601,6 @@ func TestIBazelRunStartsBeforeWatchQuery(t *testing.T) {
 	})
 	mockBazel.AddCQueryResponse(fmt.Sprintf("deps(set(%s))", target), &analysispb.CqueryResult{})
 	mockBazel.AddQueryResponse("buildfiles(set())", &blaze_query.QueryResult{})
-	mockBazel.AddCQueryResponse(fmt.Sprintf("kind('source file', deps(set(%s)))", target), &analysispb.CqueryResult{})
 
 	outputBase := t.TempDir()
 	if err := os.Mkdir(filepath.Join(outputBase, "external"), 0o700); err != nil {

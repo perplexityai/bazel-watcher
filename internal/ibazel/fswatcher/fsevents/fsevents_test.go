@@ -81,3 +81,21 @@ func TestFindCommonRoots(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateAllSkipsUnchangedRoots(t *testing.T) {
+	watcher, err := NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+
+	realWatcher := watcher.(*realFSEventsWatcher)
+	realWatcher.es.Paths = []string{"/a/", "/b/"}
+	stream := realWatcher.es
+	if err := realWatcher.UpdateAll([]string{"/b/child/", "/a/one/", "/a/two/", "/b/another/"}); err != nil {
+		t.Fatal(err)
+	}
+	if realWatcher.es != stream {
+		t.Error("unchanged watch roots restarted the FSEvents stream")
+	}
+}

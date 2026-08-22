@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -85,14 +86,17 @@ type IBazel struct {
 
 	filesWatched map[common.Watcher]map[string]struct{} // Inner map is a surrogate for a set
 
-	lifecycleListeners []Lifecycle
-	pendingChanges     []command.Change
-	changeOwners       map[string][]string
-	directTargets      []string
-	ownershipReady     bool
-	runCommandNotifies bool
-	runCommandStarted  bool
-	queryAfterRun      bool
+	lifecycleListeners  []Lifecycle
+	pendingChanges      []command.Change
+	changeOwners        map[string][]string
+	directTargets       []string
+	ownershipReady      bool
+	runCommandNotifies  bool
+	runCommandStarted   bool
+	queryAfterRun       bool
+	cachedTestTargets   []string
+	cachedTestRuleCount int
+	testRulesCached     bool
 
 	state State
 }
@@ -324,13 +328,14 @@ func (i *IBazel) iteration(commandName string, commandToRun runnableCommand, tar
 	case QUERY:
 		// Query for which files to watch.
 		log.Logf("Querying for files to watch...")
+		i.testRulesCached = false
 
-		toWatchBuildFiles, targetGraph, err := i.queryForBuildFiles(joinedTargets)
+		toWatchBuildFiles, targetGraph, localRepositories, err := i.queryForBuildFiles(joinedTargets)
 		if err != nil {
-			log.Errorf("Error querying for build files: %v", err)
+			log.Errorf("Error querying for files to watch: %v", err)
 		} else {
 			i.watchFiles(toWatchBuildFiles, i.buildFileWatcher)
-			toWatchSourceFiles, sourcePathsByLabel, sourceErr := i.sourceFilesFromGraph(targetGraph)
+			toWatchSourceFiles, sourcePathsByLabel, sourceErr := i.sourceFilesFromGraph(targetGraph, localRepositories)
 			if sourceErr != nil {
 				log.Errorf("Error resolving source files: %v", sourceErr)
 			} else {
@@ -395,28 +400,16 @@ func (i *IBazel) build(targets ...string) (*bytes.Buffer, error) {
 func (i *IBazel) test(targets ...string) (*bytes.Buffer, error) {
 	b := i.newBazel()
 
-	// Query the provided target patterns to construct a composite list
-	// Make a set that represents all the found rules.
-	targetRules := map[string]struct{}{}
-	for _, target := range targets {
-		rule, err := i.queryRule(target)
-		if err != nil {
-			log.Errorf("Error: %v", err)
+	setStream := true
+	for _, arg := range b.Args() {
+		if strings.HasPrefix(arg, "--test_output=") {
+			setStream = false
+			break
 		}
-		targetRules[rule.GetName()] = struct{}{}
 	}
-
-	if len(targetRules) == 1 {
-		setStream := true
-		for _, arg := range b.Args() {
-			if strings.HasPrefix(arg, "--test_output=") {
-				setStream = false
-			}
-		}
-		if setStream {
-			log.Log("Found a single target test. Streaming results. You can override this by explicitly passing --test_output=summary")
-			b.SetArguments(append([]string{"--test_output=streamed"}, b.Args()...))
-		}
+	if setStream && i.testTargetRuleCount(targets) == 1 {
+		log.Log("Found a single target test. Streaming results. You can override this by explicitly passing --test_output=summary")
+		b.SetArguments(append([]string{"--test_output=streamed"}, b.Args()...))
 	}
 
 	b.Cancel()
@@ -428,6 +421,26 @@ func (i *IBazel) test(targets ...string) (*bytes.Buffer, error) {
 		return outputBuffer, err
 	}
 	return outputBuffer, err
+}
+
+func (i *IBazel) testTargetRuleCount(targets []string) int {
+	if i.testRulesCached && slices.Equal(i.cachedTestTargets, targets) {
+		return i.cachedTestRuleCount
+	}
+
+	targetRules := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		rule, err := i.queryRule(target)
+		if err != nil {
+			log.Errorf("Error: %v", err)
+		}
+		targetRules[rule.GetName()] = struct{}{}
+	}
+
+	i.cachedTestTargets = append(i.cachedTestTargets[:0], targets...)
+	i.cachedTestRuleCount = len(targetRules)
+	i.testRulesCached = true
+	return i.cachedTestRuleCount
 }
 
 func contains(l []string, e string) bool {
@@ -586,23 +599,24 @@ func (i *IBazel) dumpRootRepoMapping() (map[string]string, *bytes.Buffer, error)
 	return res, stderr, nil
 }
 
-func (i *IBazel) queryForBuildFiles(targets string) ([]string, *analysispb.CqueryResult, error) {
+func (i *IBazel) queryForBuildFiles(targets string) ([]string, *analysispb.CqueryResult, map[string]string, error) {
 	b := i.newBazel()
 
 	targetRes, err := b.CQuery(i.cQueryArgs(fmt.Sprintf(targetQuery, targets))...)
 	if err != nil {
 		log.Errorf("Bazel target query failed: %v", err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	localRepositories, err := i.realLocalRepositoryPaths()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	quotedBuildTargets := make([]string, 0, len(targetRes.Results))
 	for _, configuredTarget := range targetRes.Results {
 		target := configuredTarget.GetTarget()
-		if *target.Type == blaze_query.Target_RULE {
+		switch *target.Type {
+		case blaze_query.Target_RULE:
 			label := target.GetRule().GetName()
 			if strings.HasPrefix(label, "@") {
 				repo, _ := parseTarget(label)
@@ -621,7 +635,7 @@ func (i *IBazel) queryForBuildFiles(targets string) ([]string, *analysispb.Cquer
 
 	f, err := os.CreateTemp("", "query")
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create query file: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create query file: %w", err)
 	}
 	defer func() {
 		f.Close()
@@ -629,13 +643,13 @@ func (i *IBazel) queryForBuildFiles(targets string) ([]string, *analysispb.Cquer
 	}()
 	_, err = f.WriteString(fmt.Sprintf(buildQuery, strings.Join(quotedBuildTargets, " ")))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to write query file: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to write query file: %w", err)
 	}
 
 	res, err := b.Query(i.queryArgs(fmt.Sprintf("--query_file=%s", f.Name()))...)
 	if err != nil {
 		log.Errorf("Bazel query failed: %v", err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	labels := make([]string, 0, len(res.GetTarget()))
@@ -649,11 +663,29 @@ func (i *IBazel) queryForBuildFiles(targets string) ([]string, *analysispb.Cquer
 		}
 	}
 
-	paths, err := i.labelsToWatch(labels)
-	return paths, targetRes, err
+	pathsByLabel, err := i.labelsToWatchMapWithRepositories(labels, localRepositories)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	paths := make([]string, 0, len(pathsByLabel))
+	for _, label := range labels {
+		if path, ok := pathsByLabel[label]; ok {
+			paths = append(paths, path)
+		}
+	}
+	return paths, targetRes, localRepositories, nil
 }
 
-func (i *IBazel) sourceFilesFromGraph(graph *analysispb.CqueryResult) ([]string, map[string]string, error) {
+func (i *IBazel) queryForWatchFiles(targets string) ([]string, []string, error) {
+	buildFiles, graph, localRepositories, err := i.queryForBuildFiles(targets)
+	if err != nil {
+		return nil, nil, err
+	}
+	sourceFiles, _, err := i.sourceFilesFromGraph(graph, localRepositories)
+	return buildFiles, sourceFiles, err
+}
+
+func (i *IBazel) sourceFilesFromGraph(graph *analysispb.CqueryResult, localRepositories map[string]string) ([]string, map[string]string, error) {
 	labels := make([]string, 0, len(graph.Results))
 	for _, configuredTarget := range graph.Results {
 		if configuredTarget.Target.GetType() != blaze_query.Target_SOURCE_FILE {
@@ -661,7 +693,7 @@ func (i *IBazel) sourceFilesFromGraph(graph *analysispb.CqueryResult) ([]string,
 		}
 		labels = append(labels, configuredTarget.Target.SourceFile.GetName())
 	}
-	pathsByLabel, err := i.labelsToWatchMap(labels)
+	pathsByLabel, err := i.labelsToWatchMapWithRepositories(labels, localRepositories)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -834,7 +866,10 @@ func (i *IBazel) labelsToWatchMap(labels []string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return i.labelsToWatchMapWithRepositories(labels, localRepositories)
+}
 
+func (i *IBazel) labelsToWatchMapWithRepositories(labels []string, localRepositories map[string]string) (map[string]string, error) {
 	workspacePath, err := i.workspaceFinder.FindWorkspace()
 	if err != nil {
 		log.Errorf("Error finding workspace: %v", err)

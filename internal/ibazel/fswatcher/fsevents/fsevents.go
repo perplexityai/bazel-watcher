@@ -19,6 +19,7 @@ package fsevents
 
 import (
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -44,10 +45,15 @@ func (w *realFSEventsWatcher) Close() error {
 
 // UpdateAll implements ibazel/fswatcher/common.Watcher
 func (w *realFSEventsWatcher) UpdateAll(names []string) error {
+	roots := findCommonRoots(names)
+	if slices.Equal(w.es.Paths, roots) {
+		return nil
+	}
+
 	w.es.Stop()
 	es := &fsevents.EventStream{
 		Events: make(chan []fsevents.Event),
-		Paths:  findCommonRoots(names),
+		Paths:  roots,
 		Flags:  w.es.Flags,
 	}
 	w.es = es
