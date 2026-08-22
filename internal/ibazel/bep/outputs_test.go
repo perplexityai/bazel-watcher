@@ -23,21 +23,23 @@ import (
 
 func TestReadOutputGroups(t *testing.T) {
 	stream := strings.NewReader(`
-{"id":{"namedSet":{"id":"child"}},"namedSetOfFiles":{"files":[{"name":"schema.ts","uri":"file:///execroot/bazel-out/bin/schema.ts","pathPrefix":["bazel-out","bin"],"digest":"schema-digest"}]}}
+{"id":{"namedSet":{"id":"child"}},"namedSetOfFiles":{"files":[{"name":"schema.ts","uri":"file:///execroot/bazel-out/bin/schema.ts","pathPrefix":["bazel-out","bin"],"digest":"schema-digest","length":"42"}]}}
 {"id":{"namedSet":{"id":"root"}},"namedSetOfFiles":{"files":[{"name":"routes.ts","uri":"file:///execroot/bazel-out/bin/routes.ts","pathPrefix":["bazel-out","bin"],"digest":"routes-digest"}],"fileSets":[{"id":"child"}]}}
-{"id":{"targetCompleted":{"label":"//app:dev"}},"completed":{"success":true,"outputGroup":[{"name":"frontend_dev_generated","fileSets":[{"id":"root"}]},{"name":"frontend_dev_manifest","fileSets":[]},{"name":"default","fileSets":[]}]}}
+{"id":{"targetCompleted":{"label":"//app:dev"}},"completed":{"success":true,"outputGroup":[{"name":"generated","fileSets":[{"id":"root"}],"inlineFiles":[{"name":"metadata.json","pathPrefix":["bazel-out","bin"],"contents":"e30=","length":"2"},{"name":"link","pathPrefix":["bazel-out","bin"],"symlinkTargetPath":"schema.ts"}]},{"name":"manifest","fileSets":[]},{"name":"default","fileSets":[]}]}}
 `)
 
-	got, err := ReadOutputGroups(stream, []string{"frontend_dev_generated", "frontend_dev_manifest"})
+	got, err := ReadOutputGroups(stream, []string{"generated", "manifest"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string][]Output{
-		"frontend_dev_generated": {
+		"generated": {
+			{Path: "bazel-out/bin/link", SymlinkTargetPath: "schema.ts"},
+			{Path: "bazel-out/bin/metadata.json", Contents: "e30=", Length: 2},
 			{Path: "bazel-out/bin/routes.ts", URI: "file:///execroot/bazel-out/bin/routes.ts", Digest: "routes-digest"},
-			{Path: "bazel-out/bin/schema.ts", URI: "file:///execroot/bazel-out/bin/schema.ts", Digest: "schema-digest"},
+			{Path: "bazel-out/bin/schema.ts", URI: "file:///execroot/bazel-out/bin/schema.ts", Digest: "schema-digest", Length: 42},
 		},
-		"frontend_dev_manifest": {},
+		"manifest": {},
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("output groups diff (-want +got):\n%s", diff)
@@ -68,5 +70,17 @@ func TestReadOutputGroupsRejectsMissingNamedSet(t *testing.T) {
 	_, err := ReadOutputGroups(stream, []string{"generated"})
 	if err == nil || !strings.Contains(err.Error(), `missing named set "missing"`) {
 		t.Fatalf("ReadOutputGroups() error = %v, want missing named set error", err)
+	}
+}
+
+func TestReadOutputGroupsRejectsConflictingMetadata(t *testing.T) {
+	stream := strings.NewReader(`
+{"id":{"namedSet":{"id":"outputs"}},"namedSetOfFiles":{"files":[{"name":"result.txt","pathPrefix":["bazel-out","bin"],"digest":"one"},{"name":"result.txt","pathPrefix":["bazel-out","bin"],"digest":"two"}]}}
+{"id":{"targetCompleted":{"label":"//app:dev"}},"completed":{"success":true,"outputGroup":[{"name":"generated","fileSets":[{"id":"outputs"}]}]}}
+`)
+
+	_, err := ReadOutputGroups(stream, []string{"generated"})
+	if err == nil || !strings.Contains(err.Error(), `artifact "bazel-out/bin/result.txt" has conflicting metadata`) {
+		t.Fatalf("ReadOutputGroups() error = %v, want conflicting metadata error", err)
 	}
 }

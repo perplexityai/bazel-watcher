@@ -24,12 +24,15 @@ import (
 	"sort"
 )
 
-// Output identifies one artifact in a Bazel output group. Path is its logical
-// execroot-relative path; URI locates the materialized artifact when available.
+// Output identifies one artifact in a Bazel output group. Contents uses the
+// base64 encoding from Bazel's JSON representation of the BEP.
 type Output struct {
-	Path   string `json:"path"`
-	URI    string `json:"uri,omitempty"`
-	Digest string `json:"digest,omitempty"`
+	Path              string `json:"path"`
+	URI               string `json:"uri,omitempty"`
+	Contents          string `json:"contents,omitempty"`
+	SymlinkTargetPath string `json:"symlink_target_path,omitempty"`
+	Digest            string `json:"digest,omitempty"`
+	Length            int64  `json:"length,omitempty"`
 }
 
 type event struct {
@@ -52,10 +55,13 @@ type namedSetOfFiles struct {
 }
 
 type file struct {
-	Name       string   `json:"name"`
-	URI        string   `json:"uri"`
-	PathPrefix []string `json:"pathPrefix"`
-	Digest     string   `json:"digest"`
+	Name              string   `json:"name"`
+	URI               string   `json:"uri"`
+	Contents          string   `json:"contents"`
+	SymlinkTargetPath string   `json:"symlinkTargetPath"`
+	PathPrefix        []string `json:"pathPrefix"`
+	Digest            string   `json:"digest"`
+	Length            int64    `json:"length,string"`
 }
 
 type targetComplete struct {
@@ -63,19 +69,24 @@ type targetComplete struct {
 }
 
 type outputGroup struct {
-	Name       string       `json:"name"`
-	FileSets   []namedSetID `json:"fileSets"`
-	Incomplete bool         `json:"incomplete"`
+	Name        string       `json:"name"`
+	FileSets    []namedSetID `json:"fileSets"`
+	Incomplete  bool         `json:"incomplete"`
+	InlineFiles []file       `json:"inlineFiles"`
 }
 
 // ReadOutputGroups extracts selected output groups from a JSON BEP stream.
 func ReadOutputGroups(reader io.Reader, selected []string) (map[string][]Output, error) {
 	wanted := make(map[string]struct{}, len(selected))
-	groups := make(map[string][]string, len(selected))
+	type groupFiles struct {
+		roots  []string
+		inline []file
+	}
+	groups := make(map[string]*groupFiles, len(selected))
 	seenGroups := make(map[string]struct{}, len(selected))
 	for _, name := range selected {
 		wanted[name] = struct{}{}
-		groups[name] = nil
+		groups[name] = &groupFiles{}
 	}
 
 	namedSets := make(map[string]namedSetOfFiles)
@@ -104,32 +115,33 @@ func ReadOutputGroups(reader io.Reader, selected []string) (map[string][]Output,
 			}
 			seenGroups[group.Name] = struct{}{}
 			for _, fileSet := range group.FileSets {
-				groups[group.Name] = append(groups[group.Name], fileSet.ID)
+				groups[group.Name].roots = append(groups[group.Name].roots, fileSet.ID)
 			}
+			groups[group.Name].inline = append(groups[group.Name].inline, group.InlineFiles...)
 		}
 	}
 
 	outputs := make(map[string][]Output, len(groups))
-	for name, roots := range groups {
+	for name, group := range groups {
 		if _, ok := seenGroups[name]; !ok {
 			return nil, fmt.Errorf("output group %q was not reported", name)
 		}
-		files, err := expandNamedSets(namedSets, roots)
+		files, err := expandNamedSets(namedSets, group.roots)
 		if err != nil {
 			return nil, fmt.Errorf("read output group %q: %w", name, err)
 		}
-		outputs[name] = files
+		files = append(files, outputsFromFiles(group.inline)...)
+		outputs[name], err = deduplicate(files)
+		if err != nil {
+			return nil, fmt.Errorf("read output group %q: %w", name, err)
+		}
 	}
 	return outputs, nil
 }
 
 func expandNamedSets(namedSets map[string]namedSetOfFiles, roots []string) ([]Output, error) {
 	seenSets := make(map[string]struct{})
-	type outputKey struct {
-		Path string
-		URI  string
-	}
-	seenFiles := make(map[outputKey]Output)
+	var outputs []Output
 	stack := append([]string(nil), roots...)
 	for len(stack) > 0 {
 		last := len(stack) - 1
@@ -144,31 +156,44 @@ func expandNamedSets(namedSets map[string]namedSetOfFiles, roots []string) ([]Ou
 		if !ok {
 			return nil, fmt.Errorf("missing named set %q", id)
 		}
-		for _, item := range set.Files {
-			output := Output{
-				Path:   path.Join(append(item.PathPrefix, item.Name)...),
-				URI:    item.URI,
-				Digest: item.Digest,
-			}
-			key := outputKey{Path: output.Path, URI: output.URI}
-			if previous, ok := seenFiles[key]; ok && previous.Digest != output.Digest {
-				return nil, fmt.Errorf("artifact %q has conflicting digests", output.Path)
-			}
-			seenFiles[key] = output
-		}
+		outputs = append(outputs, outputsFromFiles(set.Files)...)
 		for _, child := range set.FileSets {
 			stack = append(stack, child.ID)
 		}
 	}
 
-	outputs := make([]Output, 0, len(seenFiles))
-	for _, output := range seenFiles {
+	return deduplicate(outputs)
+}
+
+func outputsFromFiles(files []file) []Output {
+	outputs := make([]Output, 0, len(files))
+	for _, item := range files {
+		outputs = append(outputs, Output{
+			Path:              path.Join(append(item.PathPrefix, item.Name)...),
+			URI:               item.URI,
+			Contents:          item.Contents,
+			SymlinkTargetPath: item.SymlinkTargetPath,
+			Digest:            item.Digest,
+			Length:            item.Length,
+		})
+	}
+	return outputs
+}
+
+func deduplicate(files []Output) ([]Output, error) {
+	seen := make(map[string]Output, len(files))
+	for _, output := range files {
+		if previous, ok := seen[output.Path]; ok && previous != output {
+			return nil, fmt.Errorf("artifact %q has conflicting metadata", output.Path)
+		}
+		seen[output.Path] = output
+	}
+
+	outputs := make([]Output, 0, len(seen))
+	for _, output := range seen {
 		outputs = append(outputs, output)
 	}
 	sort.Slice(outputs, func(i, j int) bool {
-		if outputs[i].Path == outputs[j].Path {
-			return outputs[i].URI < outputs[j].URI
-		}
 		return outputs[i].Path < outputs[j].Path
 	})
 	return outputs, nil
