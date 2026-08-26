@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -19,6 +20,18 @@ const mainFiles = `
 sh_binary(
   name = "simple",
   srcs = ["simple.sh"],
+)
+
+sh_binary(
+  name = "notify",
+  srcs = ["notify.sh"],
+  tags = ["ibazel_notify_changes"],
+)
+
+sh_binary(
+  name = "structured_notify",
+  srcs = ["structured_notify.sh"],
+  tags = ["ibazel_notify_changes", "ibazel_notify_changes_v1"],
 )
 
 # Test and Coverage base case test
@@ -52,6 +65,16 @@ sh_binary(
 )
 -- simple.sh --
 printf "Started!"
+-- notify.sh --
+echo "notify started"
+while IFS= read -r event; do
+  printf 'notify received: %s\n' "$event"
+done
+-- structured_notify.sh --
+echo "structured notify started"
+while IFS= read -r event; do
+  printf 'structured notify received: %s\n' "$event"
+done
 -- environment.sh --
 printf "Started and IBAZEL=${IBAZEL}!"
 -- define_test_1.sh --
@@ -84,7 +107,45 @@ func TestSimpleBuild(t *testing.T) {
 	ibazel.Run([]string{}, "//:simple")
 	defer ibazel.Kill()
 
-	ibazel.ExpectOutput("Started!", 50 * time.Second)
+	ibazel.ExpectOutput("Started!", 50*time.Second)
+}
+
+func TestNotificationRunStartsBeforeWatchDiscovery(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		target string
+		output string
+	}{
+		{name: "legacy", target: "//:notify", output: "notify"},
+		{name: "structured", target: "//:structured_notify", output: "structured notify"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ibazel := e2e.SetUp(t)
+			ibazel.Run([]string{}, test.target)
+			defer ibazel.Kill()
+
+			output := test.output + " started(?s:.*)" + test.output + " received: IBAZEL_BUILD_COMPLETED SUCCESS"
+			if test.name == "structured" {
+				output += `(?s:.*)IBAZEL_EVENT .*"changes":\[\{"path":"","kind":"graph"\}\]`
+			}
+			ibazel.ExpectOutput(output)
+
+			log := ibazel.GetIBazelError()
+			run := strings.Index(log, "Running "+test.target)
+			query := strings.Index(log, "Querying for files to watch...")
+			if run == -1 || query == -1 || run > query {
+				t.Fatalf("expected target to start before watch discovery; log:\n%s", log)
+			}
+
+			if test.name == "structured" {
+				e2e.MustWriteFile(t, "structured_notify.sh", `echo "structured notify restarted"
+while IFS= read -r event; do
+  printf 'structured notify received: %s\n' "$event"
+done`)
+				ibazel.ExpectOutput(`IBAZEL_EVENT .*"kind":"source"`)
+			}
+		})
+	}
 }
 
 func TestSimpleTestFailing(t *testing.T) {
