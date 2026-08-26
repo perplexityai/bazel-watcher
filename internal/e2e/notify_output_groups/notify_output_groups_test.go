@@ -12,9 +12,9 @@ const mainFiles = `
 -- BUILD.bazel --
 load(":notify_app.bzl", "notify_app")
 
-cc_binary(
+sh_binary(
     name = "notification_server",
-    srcs = ["notification_server.cc"],
+    srcs = ["notification_server.sh"],
 )
 
 notify_app(
@@ -62,18 +62,12 @@ notify_app = rule(
     },
     executable = True,
 )
--- notification_server.cc --
-#include <iostream>
-#include <string>
-
-int main() {
-    std::cout << "ready" << std::endl;
-    for (std::string line; std::getline(std::cin, line);) {
-        std::cout << line << std::endl;
-    }
-    return 0;
-}
-
+-- notification_server.sh --
+#!/usr/bin/env bash
+printf 'ready\n'
+while IFS= read -r line; do
+    printf '%s\n' "$line"
+done
 -- source.txt --
 generated output
 `
